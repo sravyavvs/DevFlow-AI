@@ -10,3 +10,6 @@ target/
 data/
 *.mv.db
 *.trace.db
+
+# Generated pipeline artifacts
+build/

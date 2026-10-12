@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DevFlow AI</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --page:#EEF1F4; --panel:#FFFFFF; --ink:#17212B; --muted:#5B6773; --line:#D5DBE1;
+    --agent:#0F766E; --agent-bg:#DDF3EF;
+    --human:#B86A00; --human-bg:#FDF0D8;
+    --run:#2F5BD3; --run-bg:#E3EAFB;
+    --bad:#B42318; --bad-bg:#FCE4E2;
+    --idle:#8A96A3; --idle-bg:#F2F4F6;
+    --sans:"IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+    --mono:"IBM Plex Mono", Consolas, monospace;
+  }
+  * { box-sizing:border-box; }
+  html, body { height:100%; margin:0; }
+  body { font:14px/1.45 var(--sans); color:var(--ink); background:var(--page); display:flex; flex-direction:column; }
+  button, input, select, textarea { font:inherit; color:inherit; }
+  button { cursor:pointer; border:1px solid var(--line); background:var(--panel); border-radius:6px; padding:6px 12px; }
+  button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, .node:focus-visible { outline:2px solid var(--run); outline-offset:2px; }
+  button.go { background:var(--agent); border-color:var(--agent); color:#fff; font-weight:600; }
+  button.approve { background:var(--human); border-color:var(--human); color:#fff; font-weight:600; }
+  button.danger { color:var(--bad); border-color:#E7B4AE; }
+  input, select, textarea { border:1px solid var(--line); border-radius:6px; padding:6px 8px; background:#fff; }
+
+  /* Top bar: requirement entry */
+  .top { display:flex; gap:10px; align-items:center; padding:10px 16px; background:var(--panel); border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  .brand { font-weight:600; font-size:16px; margin-right:6px; white-space:nowrap; }
+  .top select { width:190px; }
+  .top input#req { flex:1 1 320px; min-width:200px; }
+  .who { display:flex; align-items:center; gap:6px; color:var(--muted); font-size:13px; white-space:nowrap; }
+  .who input { width:130px; }
+
+  /* Pipeline map: the one memorable element */
+  .map { position:relative; padding:18px 16px 14px; overflow-x:auto; min-height:170px; }
+  .map svg { position:absolute; inset:0; pointer-events:none; overflow:visible; }
+  .cols { position:relative; display:flex; gap:44px; align-items:center; width:max-content; min-height:136px; }
+  .col { display:flex; flex-direction:column; gap:10px; }
+  .node { width:168px; padding:8px 10px; border-radius:8px; border:1.5px solid var(--idle); background:var(--idle-bg); cursor:pointer; text-align:left; }
+  .node .name { font-weight:600; font-size:13px; }
+  .node .state { font-size:12px; color:var(--muted); }
+  .node .gate { font-size:11px; color:var(--human); }
+  .node.sel { box-shadow:0 0 0 3px rgba(47,91,211,.25); }
+  .node.COMPLETED { border-color:var(--agent); background:var(--agent-bg); }
+  .node.COMPLETED.blockedVerdict { border-color:var(--human); background:var(--human-bg); }
+  .node.AWAITING_APPROVAL, .node.AWAITING_INPUT { border-color:var(--human); background:var(--human-bg); border-style:dashed; }
+  .node.RUNNING { border-color:var(--run); background:var(--run-bg); }
+  .node.FAILED, .node.REJECTED { border-color:var(--bad); background:var(--bad-bg); }
+  .node.BLOCKED, .node.ROLLED_BACK { border-color:var(--human); background:var(--human-bg); }
+  .node.SKIPPED { opacity:.55; }
+  .empty { color:var(--muted); padding:40px 4px; }
+  .legend { display:flex; gap:14px; font-size:12px; color:var(--muted); padding:0 16px 8px; flex-wrap:wrap; }
+  .legend i { display:inline-block; width:10px; height:10px; border-radius:3px; margin-right:5px; vertical-align:-1px; }
+
+  /* Next step: exactly one call to action */
+  .next { margin:0 16px; padding:12px 14px; border-radius:8px; background:var(--panel); border:1px solid var(--line); border-left:5px solid var(--idle); display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+  .next.human { border-left-color:var(--human); }
+  .next.done { border-left-color:var(--agent); }
+  .next.bad { border-left-color:var(--bad); }
+  .next .msg { flex:1 1 320px; }
+  .next .msg b { display:block; }
+  .next .msg span { color:var(--muted); font-size:13px; }
+  .next textarea { flex:1 1 100%; min-height:44px; resize:vertical; }
+  .err { color:var(--bad); font-size:13px; padding:6px 16px 0; min-height:20px; }
+
+  /* Details: tabs with internal scroll so the page never grows */
+  .details { flex:1; min-height:220px; margin:6px 16px 16px; background:var(--panel); border:1px solid var(--line); border-radius:8px; display:flex; flex-direction:column; overflow:hidden; }
+  .tabs { display:flex; border-bottom:1px solid var(--line); padding:0 8px; }
+  .tabs button { border:0; border-bottom:2px solid transparent; border-radius:0; background:none; padding:9px 12px; color:var(--muted); }
+  .tabs button[aria-selected="true"] { color:var(--ink); border-bottom-color:var(--ink); font-weight:600; }
+  .pane { flex:1; overflow:auto; padding:12px 14px; }
+  .pane[hidden] { display:none; }
+  .ev { display:grid; grid-template-columns:42px 1fr auto; gap:8px; padding:5px 0; border-bottom:1px solid #EEF0F3; font-size:13px; }
+  .ev .seq { color:var(--idle); font-family:var(--mono); font-size:12px; }
+  .ev .actor { color:var(--muted); font-size:12px; white-space:nowrap; }
+  .ev.human .what { color:var(--human); font-weight:500; }
+  .ev.bad .what { color:var(--bad); font-weight:500; }
+  .toolbar { display:flex; gap:10px; align-items:center; margin-bottom:8px; font-size:13px; color:var(--muted); flex-wrap:wrap; }
+  .kv { display:grid; grid-template-columns:repeat(auto-fill, minmax(170px, 1fr)); gap:10px; }
+  .kv div { border:1px solid var(--line); border-radius:6px; padding:8px 10px; }
+  .kv span { display:block; font-size:12px; color:var(--muted); }
+  .kv b { font-size:18px; font-weight:600; }
+  pre { margin:8px 0 0; background:#F6F8FA; border:1px solid var(--line); border-radius:6px; padding:10px; font:12px/1.5 var(--mono); overflow:auto; max-height:46vh; }
+  .stagehead b { font-size:15px; }
+  .stagehead p { margin:4px 0; color:var(--muted); }
+  .note { color:var(--muted); font-size:13px; max-width:70ch; }
+  @media (max-width:720px) { .who { width:100%; } .top select { flex:1; } }
+  @media (prefers-reduced-motion:no-preference) { .node { transition:background .2s, border-color .2s; } }
+</style>
+</head>
+<body>
+
+<div class="top">
+  <span class="brand">DevFlow AI</span>
+  <select id="preset" aria-label="Example requirement">
+    <option value="">Example requirements…</option>
+    <option>Build a URL shortener API that creates short links, redirects users, and tracks click analytics.</option>
+    <option>Fix the existing URL shortener so unknown short codes return 404 and add regression tests.</option>
+    <option>Make the URL shortener faster and more secure for users.</option>
+    <option>Build a secure URL shortener that creates short links and redirects users.</option>
+    <option>Make redirects faster: p95 under 200 ms, and reject javascript and data URLs.</option>
+  </select>
+  <input id="req" aria-label="Requirement" placeholder="Describe what you need built or changed"
+         value="Build a URL shortener API that creates short links, redirects users, and tracks click analytics.">
+  <button class="go" id="create">Start pipeline</button>
+  <label class="who">Acting as <input id="who" value="tech-lead" aria-label="Your reviewer id"></label>
+</div>
+
+<div class="map" id="map"><svg id="edges"></svg><div class="cols" id="cols"><div class="empty">Enter a requirement and start a pipeline. Agents work until a stage needs a human decision.</div></div></div>
+<div class="legend">
+  <span><i style="background:var(--agent)"></i>Done by agent</span>
+  <span><i style="background:var(--human)"></i>Needs a human / blocked</span>
+  <span><i style="background:var(--run)"></i>Running</span>
+  <span><i style="background:var(--bad)"></i>Failed or rejected</span>
+  <span><i style="background:var(--idle)"></i>Not started</span>
+</div>
+
+<div class="next" id="next"><div class="msg"><b>No pipeline yet</b><span>Pick an example or write your own requirement above.</span></div></div>
+<div class="err" id="err" role="alert"></div>
+
+<section class="details">
+  <div class="tabs" role="tablist">
+    <button role="tab" aria-selected="true" data-tab="activity">Activity</button>
+    <button role="tab" aria-selected="false" data-tab="stage">Stage output</button>
+    <button role="tab" aria-selected="false" data-tab="metrics">Metrics</button>
+    <button role="tab" aria-selected="false" data-tab="drills">Failure drills</button>
+  </div>
+  <div class="pane" id="pane-activity">
+    <div class="toolbar"><label><input type="checkbox" id="showAll"> Show policy checks and status changes</label></div>
+    <div id="events" class="note">The audit log appears here: every agent step, policy decision and human action, newest first.</div>
+  </div>
+  <div class="pane" id="pane-stage" hidden><div id="stage" class="note">Click a stage in the map to see what it produced.</div></div>
+  <div class="pane" id="pane-metrics" hidden><div id="metrics" class="note">Reliability metrics appear once a pipeline exists.</div></div>
+  <div class="pane" id="pane-drills" hidden>
+    <p class="note">Inject a fault into a stage that has not run yet, then continue the pipeline to see retries, rollback, safe stop and recovery. A transient fault is retried; a permanent one halts the pipeline and rolls back side effects.</p>
+    <div class="toolbar">
+      <select id="faultStage" aria-label="Stage"></select>
+      <select id="faultMode" aria-label="Fault type">
+        <option value="TRANSIENT_ONCE">Transient, once (retried)</option>
+        <option value="TRANSIENT_ALWAYS">Transient, every attempt (exhausts retries)</option>
+        <option value="PERMANENT">Permanent (halts and rolls back)</option>
+      </select>
+      <button id="inject">Inject fault</button>
+      <button class="danger" id="stop">Safe stop pipeline</button>
+    </div>
+  </div>
+</section>
+
+<script>
+const API = '/api/pipelines';
+const $ = s => document.querySelector(s);
+const esc = v => String(v ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const nice = id => !id ? '' : id === 'NFR_VERIFICATION' ? 'NFR verification' : id.charAt(0) + id.slice(1).toLowerCase().replace(/_/g, ' ');
+let pipeline = null, artifacts = [], events = [], selected = null;
+
+async function call(method, path, body) {
+  $('#err').textContent = '';
+  const res = await fetch(API + path, { method, headers:{'Content-Type':'application/json'}, body: body ? JSON.stringify(body) : undefined });
+  const text = await res.text();
+  const data = text ? JSON.parse(text) : null;
+  if (!res.ok) { $('#err').textContent = (data && data.message) || `Request failed (${res.status})`; throw new Error(text); }
+  return data;
+}
+const who = () => $('#who').value.trim();
+const act = fn => async (...a) => { try { await fn(...a); } catch (e) { console.error(e); } };
+
+// ---------- pipeline map ----------
+function depths(stages) {
+  const byId = Object.fromEntries(stages.map(s => [s.id, s])), memo = {};
+  const d = id => memo[id] ?? (memo[id] = byId[id].dependsOn.length ? 1 + Math.max(...byId[id].dependsOn.map(d)) : 0);
+  stages.forEach(s => d(s.id));
+  return memo;
+}
+function stateText(s) {
+  const map = { COMPLETED: s.verdict === 'BLOCKED' ? 'Done, evidence incomplete' : 'Done', AWAITING_APPROVAL:'Waiting for your approval',
+    AWAITING_INPUT:'Waiting for clarification', RUNNING:'Running', PENDING:'Not started', BLOCKED:'Blocked by policy',
+    FAILED:'Failed', SKIPPED:'Skipped', REJECTED:'Rejected', ROLLED_BACK:'Rolled back' };
+  let t = map[s.status] || s.status;
+  if (s.attempts > 1) t += ` (${s.attempts} attempts)`;
+  return t;
+}
+function renderMap() {
+  const cols = $('#cols');
+  const d = depths(pipeline.stages);
+  const groups = [];
+  pipeline.stages.forEach(s => (groups[d[s.id]] ||= []).push(s));
+  cols.innerHTML = groups.map(g => `<div class="col">${g.map(s => `
+    <button class="node ${esc(s.status)} ${s.verdict === 'BLOCKED' ? 'blockedVerdict' : ''} ${s.id === selected ? 'sel' : ''}" data-id="${esc(s.id)}" id="n-${esc(s.id)}">
+      <div class="name">${esc(nice(s.id))}</div>
+      <div class="state">${esc(stateText(s))}</div>
+      ${s.gate === 'HUMAN_APPROVAL' ? '<div class="gate">Human approval gate</div>' : s.gate === 'HUMAN_CLARIFICATION' ? '<div class="gate">Human input gate</div>' : ''}
+    </button>`).join('')}</div>`).join('');
+  requestAnimationFrame(drawEdges);
+}
+function drawEdges() {
+  const svg = $('#edges'), box = $('#map').getBoundingClientRect(), map = $('#map');
+  if (!pipeline) { svg.innerHTML = ''; return; }
+  svg.setAttribute('width', map.scrollWidth); svg.setAttribute('height', map.scrollHeight);
+  const pos = id => { const r = $('#n-' + id).getBoundingClientRect();
+    return { l: r.left - box.left + map.scrollLeft, r: r.right - box.left + map.scrollLeft, y: r.top - box.top + r.height / 2 }; };
+  svg.innerHTML = '<defs><marker id="a" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#9AA5B1"/></marker></defs>' +
+    pipeline.stages.flatMap(s => s.dependsOn.map(dep => {
+      const a = pos(dep), b = pos(s.id), mx = (a.r + b.l) / 2;
+      return `<path d="M${a.r},${a.y} C${mx},${a.y} ${mx},${b.y} ${b.l - 2},${b.y}" fill="none" stroke="#9AA5B1" stroke-width="1.5" marker-end="url(#a)"/>`;
+    })).join('');
+}
+window.addEventListener('resize', () => pipeline && drawEdges());
+$('#map').addEventListener('scroll', () => pipeline && drawEdges());
+
+// ---------- next step ----------
+function renderNext() {
+  const p = pipeline, el = $('#next');
+  const waiting = p.stages.find(s => s.status === 'AWAITING_APPROVAL');
+  const failed = p.stages.find(s => s.status === 'FAILED');
+  const blocked = p.stages.find(s => s.status === 'BLOCKED');
+  const m = window.lastMetrics || {};
+  const set = (cls, html) => { el.className = 'next ' + cls; el.innerHTML = html; };
+  switch (p.status) {
+    case 'NEEDS_CLARIFICATION': {
+      const req = artifacts.filter(a => a.stageId === 'REQUIREMENTS').pop();
+      const why = req ? (req.content.ambiguityReasons || []).join(' ') : '';
+      set('human', `<div class="msg"><b>The requirement is ambiguous, so agents stopped before planning.</b><span>${esc(why)} Describe the observable behaviour you want; the plan is rebuilt from your answer.</span></div>
+        <textarea id="clar" aria-label="Clarification">Fix the existing URL shortener so unknown short codes return 404 and add regression checks; defer performance and security improvements.</textarea>
+        <button class="approve" id="doClarify">Send clarification</button>`);
+      $('#doClarify').onclick = act(async () => show(await call('POST', `/${p.pipelineId}/clarification`, { clarification: $('#clar').value, requesterId: who() })));
+      break;
+    }
+    case 'AWAITING_APPROVAL': {
+      const what = waiting.id === 'IMPLEMENTATION'
+        ? 'Review the architecture and test plan, then approve the code change.'
+        : 'Review the test, documentation and quality evidence, then approve the release.';
+      set('human', `<div class="msg"><b>${esc(nice(waiting.id))} needs your approval.</b><span>${what} Your approval is tied to the exact evidence you reviewed; if it changes, you will be asked again.</span></div>
+        <button id="review">Review evidence</button>
+        <button class="danger" id="reject">Reject</button>
+        <button class="approve" id="approve">Approve ${esc(nice(waiting.id).toLowerCase())}</button>`);
+      $('#review').onclick = () => { selected = waiting.dependsOn[0]; renderMap(); openTab('stage'); renderStage(); };
+      $('#approve').onclick = act(async () => show(await decide(waiting.id, 'approve')));
+      $('#reject').onclick = act(async () => show(await decide(waiting.id, 'reject')));
+      break;
+    }
+    case 'BLOCKED':
+      set('human', `<div class="msg"><b>${esc(nice(blocked ? blocked.id : 'A stage'))} is blocked, so nothing was released.</b><span>${esc(blocked ? blocked.lastError : '')}</span></div>
+        <button id="why">See the evidence</button>`);
+      $('#why').onclick = () => { selected = (p.stages.find(s => s.verdict === 'BLOCKED') || blocked).id; renderMap(); openTab('stage'); renderStage(); };
+      break;
+    case 'FAILED':
+      set('bad', `<div class="msg"><b>${esc(nice(failed ? failed.id : 'A stage'))} failed. The pipeline stopped and rolled back side effects.</b><span>${esc(failed ? failed.lastError : '')}</span></div>
+        <button class="danger" id="stop2">Stop for good</button>
+        <button class="go" id="resume">Resume pipeline</button>`);
+      $('#resume').onclick = act(async () => show(await call('POST', `/${p.pipelineId}/resume`, { operatorId: who(), reason: 'Cause investigated and cleared' })));
+      $('#stop2').onclick = act(stopPipeline);
+      break;
+    case 'COMPLETED':
+      set('done', `<div class="msg"><b>Ready for release. Every stage passed with evidence.</b><span>Finished in ${fmtMs(m.endToEndLatencyMs)} (agents ${fmtMs(m.agentLatencyMs)}, waiting on humans ${fmtMs(m.humanWaitMs)}). Retries ${m.retryCount ?? 0}, rollbacks ${m.rollbackCount ?? 0}${m.mttrMs != null ? ', recovered in ' + fmtMs(m.mttrMs) : ''}.</span></div>`);
+      break;
+    case 'REJECTED':
+      set('bad', `<div class="msg"><b>Rejected by a reviewer. This pipeline is closed.</b><span>Start a new pipeline to try again.</span></div>`); break;
+    case 'STOPPED':
+      set('bad', `<div class="msg"><b>Stopped by an operator. This pipeline is closed.</b><span>Side effects were rolled back. Start a new pipeline to try again.</span></div>`); break;
+    default:
+      set('', `<div class="msg"><b>Agents are working.</b><span>Refresh in a moment.</span></div>`);
+  }
+}
+const fmtMs = v => v == null ? '–' : v < 1000 ? `${v} ms` : `${(v / 1000).toFixed(1)} s`;
+const decide = (stage, decision) => call('POST', `/${pipeline.pipelineId}/stages/${stage}/approval`,
+  { decision, reviewerId: who(), reviewerNote: decision === 'approve' ? 'Reviewed upstream evidence' : 'Rejected after review' });
+async function stopPipeline() { show(await call('POST', `/${pipeline.pipelineId}/stop`, { operatorId: who(), reason: 'Operator safe stop' })); }
+
+// ---------- activity ----------
+const QUIET = new Set(['POLICY_ALLOWED', 'PIPELINE_STATUS_CHANGED', 'STAGE_STARTED']);
+function describe(e) {
+  const d = e.details || {}, st = nice(e.stageId);
+  switch (e.type) {
+    case 'PIPELINE_CREATED': return 'Pipeline created';
+    case 'GRAPH_PLANNED': return `Initial plan: ${(d.stages || []).map(nice).join(', ')}`;
+    case 'GRAPH_REPLANNED': return `Plan rebuilt from new output${d.added?.length ? ': added ' + d.added.map(nice).join(', ') : ''}${d.removed?.length ? '; removed ' + d.removed.map(nice).join(', ') : ''}`;
+    case 'STAGE_STARTED': return `${st} started${d.executionMode === 'PARALLEL' ? ' in parallel with ' + d.wave.filter(w => w !== e.stageId).map(nice).join(', ') : ''}`;
+    case 'PARALLEL_JOIN': return `Parallel stages joined: ${d.joinedStages.map(nice).join(' + ')}`;
+    case 'STAGE_COMPLETED': return `${st} done (${d.verdict}): ${d.summary}`;
+    case 'STAGE_RETRY': return `${st} hit a transient error, retrying (attempt ${d.nextAttempt} of ${d.maxAttempts})`;
+    case 'STAGE_FAILED': return `${st} failed: ${d.reason}`;
+    case 'STAGE_SKIPPED': return `${st} skipped: ${d.reason}`;
+    case 'STAGE_BLOCKED': return `${st} blocked: ${d.reason}`;
+    case 'POLICY_DENIED': return `Policy ${d.rule} denied ${st}: ${d.reason}`;
+    case 'POLICY_ALLOWED': return `Policy ${d.rule} allowed ${st}`;
+    case 'APPROVAL_REQUESTED': return `${st} is waiting for approval`;
+    case 'APPROVAL_GRANTED': return `${st} approved`;
+    case 'APPROVAL_REJECTED': return `${st} rejected`;
+    case 'APPROVAL_INVALIDATED': return `Approval of ${st} withdrawn: the evidence it was based on changed`;
+    case 'CLARIFICATION_REQUESTED': return 'Requirement is ambiguous; waiting for clarification';
+    case 'CLARIFICATION_RECEIVED': return `Clarification received: "${d.clarification}"`;
+    case 'STAGES_INVALIDATED': return `Re-running ${d.stages.map(nice).join(', ')} (${d.reason})`;
+    case 'ARTIFACT_REVISED': return `${st} output revised to v${d.toVersion}: ${d.reason}`;
+    case 'ROLLBACK_STARTED': return `Rolling back ${st}`;
+    case 'ROLLBACK_COMPLETED': return `${st} rolled back`;
+    case 'ROLLBACK_FAILED': return `Rollback of ${st} failed: manual action needed`;
+    case 'PIPELINE_HALTED': return 'Pipeline halted; no new stages will start until an operator acts';
+    case 'RECOVERY_STARTED': return `Recovery started: re-running ${(d.requeuedStages || []).map(nice).join(', ')}`;
+    case 'RECOVERY_COMPLETED': return `Recovered in ${fmtMs(d.timeToRecoverMs)}`;
+    case 'FAULT_INJECTED': return `Fault injected into ${st}: ${d.mode}`;
+    case 'SAFE_STOP': return `Safe stop: ${d.reason}`;
+    case 'PIPELINE_COMPLETED': return `Pipeline completed in ${fmtMs(d.endToEndLatencyMs)}`;
+    case 'PIPELINE_STATUS_CHANGED': return `Status ${d.from} to ${d.to}`;
+    default: return e.type;
+  }
+}
+function tone(e) {
+  if (/FAILED|DENIED|REJECTED|HALTED|ROLLBACK|SAFE_STOP|BLOCKED|INVALIDATED/.test(e.type)) return 'bad';
+  if (!e.actor.startsWith('agent') && !['orchestrator', 'policy-engine'].includes(e.actor) && !e.actor.startsWith('planner')) return 'human';
+  return '';
+}
+function renderEvents() {
+  const all = $('#showAll').checked;
+  const list = events.filter(e => all || !QUIET.has(e.type)).slice().reverse();
+  $('#events').className = '';
+  $('#events').innerHTML = list.map(e => `<div class="ev ${tone(e)}"><span class="seq">#${e.seq}</span><span class="what">${esc(describe(e))}</span><span class="actor">${esc(e.actor)}</span></div>`).join('');
+}
+$('#showAll').onchange = renderEvents;
+
+// ---------- stage output ----------
+function renderStage() {
+  const s = pipeline && pipeline.stages.find(x => x.id === selected);
+  if (!s) return;
+  const versions = artifacts.filter(a => a.stageId === s.id);
+  const latest = versions[versions.length - 1];
+  $('#stage').className = '';
+  $('#stage').innerHTML = `<div class="stagehead"><b>${esc(nice(s.id))}</b> <span class="note">${esc(stateText(s))}</span>
+      <p>${esc(s.title)}</p>
+      ${s.dependsOn.length ? `<p>Uses output from: ${s.dependsOn.map(nice).map(esc).join(', ')}</p>` : ''}
+      ${s.approval ? `<p>${esc(s.approval.decision === 'approve' ? 'Approved' : 'Rejected')} by ${esc(s.approval.reviewerId)}</p>` : ''}
+      ${s.lastError ? `<p style="color:var(--bad)">${esc(s.lastError)}</p>` : ''}</div>
+    ${latest ? `<div class="toolbar">${versions.length > 1 ? `<select id="ver">${versions.map((v, i) => `<option value="${i}" ${i === versions.length - 1 ? 'selected' : ''}>Version ${v.version} by ${esc(v.producedBy)}</option>`).join('')}</select>` : `Version ${latest.version} by ${esc(latest.producedBy)}`}
+        <span>Verdict: ${esc(latest.verdict)}</span></div><p>${esc(latest.summary)}</p><pre id="art"></pre>`
+      : '<p class="note">This stage has not produced output yet.</p>'}`;
+  if (latest) {
+    const showV = i => $('#art').textContent = JSON.stringify(versions[i].content, null, 2);
+    showV(versions.length - 1);
+    if ($('#ver')) $('#ver').onchange = e => showV(Number(e.target.value));
+  }
+}
+$('#cols').addEventListener('click', e => {
+  const n = e.target.closest('.node'); if (!n) return;
+  selected = n.dataset.id; renderMap(); openTab('stage'); renderStage();
+});
+
+// ---------- metrics ----------
+function renderMetrics(m) {
+  const rows = [
+    ['Stage success rate', m.stageSuccessRatePercent == null ? '–' : m.stageSuccessRatePercent + '%'],
+    ['End-to-end time', fmtMs(m.endToEndLatencyMs)], ['Agent time', fmtMs(m.agentLatencyMs)], ['Waiting on humans', fmtMs(m.humanWaitMs)],
+    ['Retries', m.retryCount], ['Rollbacks', m.rollbackCount], ['Mean time to recover', fmtMs(m.mttrMs)],
+    ['Policy denials', m.policyDenials], ['Re-plans', m.replanCount], ['Approvals withdrawn', m.approvalInvalidations]];
+  $('#metrics').className = '';
+  $('#metrics').innerHTML = `<div class="kv">${rows.map(([k, v]) => `<div><span>${k}</span><b>${esc(v)}</b></div>`).join('')}</div>
+    <p class="note" style="margin-top:12px">${esc(m.mttrDefinition)} All metrics are computed from the audit log.</p>`;
+}
+
+// ---------- drills ----------
+function renderDrills() {
+  const open = pipeline.stages.filter(s => !['COMPLETED', 'SKIPPED', 'REJECTED'].includes(s.status));
+  $('#faultStage').innerHTML = open.length ? open.map(s => `<option value="${esc(s.id)}">${esc(nice(s.id))}</option>`).join('') : '<option value="">No stages left to run</option>';
+}
+$('#inject').onclick = act(async () => {
+  if (!$('#faultStage').value) return;
+  await call('POST', `/${pipeline.pipelineId}/faults`, { stageId: $('#faultStage').value, mode: $('#faultMode').value });
+  await refresh(); openTab('activity');
+});
+$('#stop').onclick = act(stopPipeline);
+
+// ---------- tabs and wiring ----------
+function openTab(name) {
+  document.querySelectorAll('.tabs button').forEach(b => b.setAttribute('aria-selected', String(b.dataset.tab === name)));
+  document.querySelectorAll('.pane').forEach(p => p.hidden = p.id !== 'pane-' + name);
+}
+document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => openTab(b.dataset.tab));
+
+async function show(p) {
+  pipeline = p;
+  const [ev, art, m] = await Promise.all([call('GET', `/${p.pipelineId}/events`), call('GET', `/${p.pipelineId}/artifacts`), call('GET', `/${p.pipelineId}/metrics`)]);
+  events = ev; artifacts = art; window.lastMetrics = m;
+  if (!selected || !p.stages.some(s => s.id === selected)) selected = null;
+  renderMap(); renderNext(); renderEvents(); renderMetrics(m); renderDrills();
+  if (selected) renderStage();
+}
+const refresh = async () => show(await call('GET', `/${pipeline.pipelineId}`));
+
+$('#preset').onchange = e => { if (e.target.value) $('#req').value = e.target.value; e.target.selectedIndex = 0; };
+$('#create').onclick = act(async () => { selected = null; openTab('activity'); await show(await call('POST', '', { requirement: $('#req').value })); });
+$('#req').addEventListener('keydown', e => { if (e.key === 'Enter') $('#create').click(); });
+</script>
+</body>
+</html>

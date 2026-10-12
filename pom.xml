@@ -54,12 +54,6 @@
             <scope>runtime</scope>
         </dependency>
 
-        <!-- Existing workbench UI templates -->
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-thymeleaf</artifactId>
-        </dependency>
-
         <!-- JUnit 5, Mockito and Spring testing utilities -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

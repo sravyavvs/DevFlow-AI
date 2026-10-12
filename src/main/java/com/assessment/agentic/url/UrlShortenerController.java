@@ -10,6 +10,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
 import org.springframework.web.servlet.view.RedirectView;
 
 import jakarta.validation.Valid;
@@ -33,7 +34,8 @@ public class UrlShortenerController {
         Map<String, String> response = Map.of(
                 "shortCode", mapping.getShortCode(),
                 "originalUrl", mapping.getOriginalUrl(),
-                "shortUrl", "http://localhost:8080/" + mapping.getShortCode()
+                "shortUrl", ServletUriComponentsBuilder.fromCurrentContextPath()
+                        .path("/{code}").buildAndExpand(mapping.getShortCode()).toUriString()
         );
 
         return ResponseEntity.status(HttpStatus.CREATED).body(response);

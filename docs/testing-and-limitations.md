@@ -1,9 +1,45 @@
-# Testing, failure behavior, and limitations
+# Testing, limitations and trade-offs
 
-Run `mvn clean test` before the demo. Tests cover planning join, approval/rejection, requirement-derived brownfield criteria, ambiguity/clarification, unsupported non-functional requirements, bounded transient retries, compensation, metrics semantics, and integration execution.
+## Test pyramid
 
-The workflow's validation report is generated from the checks actually executed. A requirement containing performance/security goals cannot be `PASSED` merely because URL-shortener smoke checks succeeded. It becomes `BLOCKED` unless those goals are explicitly deferred or dedicated verification is available. A failed supported check yields `FAILED`; checks not run remain `NOT_RUN`.
+| Suite | Level | What it proves |
+|---|---|---|
+| `PipelineGraphTest` | Unit | Topological order, ancestors and descendants; rejects cycles, unknown dependencies, duplicates and an invalid retry budget |
+| `PipelineExecutorTest` | Unit (fake agents) | Real concurrency of independent stages (latch-proven), joins, approval gates, digest-bound approvals, segregation of duties, bounded transient retry, no retry on permanent failure, rollback of side effects, safe stop, rejection, recovery with MTTR, exit-gate secret blocking, invalidation on upstream revision |
+| `RequirementAnalyzerTest` | Unit | Greenfield, brownfield, ambiguous, clarified-with-deferral, measurable targets, vague-but-functional |
+| `PipelineScenariosIntegrationTest` | Spring Boot + H2 | All five scenarios end to end through the real service bean and file system |
+| `UrlShortenerServiceTest`, `UrlShortenerIntegrationTest` | Unit / MockMvc | URL shortener HTTP contract: 201, 302, 404, 400, click analytics |
 
-The retry mechanism only retries `TransientDataAccessException` on a read-only analytics query. It does not retry validation assertions or broad `RuntimeException`s. Rollback is compensating deletion of the isolated mapping created by the smoke check, not a database-wide transaction rollback.
+Run `mvn clean test` (31 tests: 22 orchestration + 9 URL shortener). The demo scripts are acceptance tests against a running instance; they fail loudly on any unexpected status.
 
-H2 stores workflow snapshots, events, and artifacts across restarts. Local H2 and process-level synchronization do not provide multi-instance coordination, authenticated reviewer identity, or production-grade access control. Reviewer IDs are audit labels supplied by the API caller. No code generation, patching, sandbox, security scanner, load testing, or deployment is implemented.
+## Validation philosophy
+
+- A verdict is PASSED only when evidence was actually produced. When evidence is missing, the verdict is BLOCKED; when evidence contradicts the criterion, the stage fails.
+- Every acceptance criterion is traced to a test case and, where one exists, an automated test (see TEST_PLAN and the delivery notes).
+- Policies are evaluated on human revisions as well as agent output.
+
+## Failure scenarios considered
+
+| Scenario | Handling |
+|---|---|
+| Transient database error | Retried within the stage budget, then the stage fails |
+| Assertion failure in TESTING | Permanent; no retry; fixture deleted; pipeline halts |
+| Agent hangs | 30 s timeout, treated as failure |
+| Agent emits secrets or out-of-scope changes | Exit gate denies; output is discarded and compensated |
+| Upstream artifact changes after approval | Approval invalidated; downstream work re-runs |
+| Compensation itself fails | `ROLLBACK_FAILED` logged with "manual intervention required" |
+| Runaway re-planning | Execution budget triggers a safe stop |
+| Reviewer impersonating an agent | Reserved identities rejected |
+
+## Limitations
+
+- **No autonomous code writing.** IMPLEMENTATION reasons over the compiled codebase and proposes change sets. Applying them is a human pull request; this is a deliberate autonomy boundary.
+- **Keyword-based analysis.** Unusual phrasing may be misclassified. The design fails safe toward clarification or BLOCKED rather than a false pass.
+- **In-memory pipeline state.** Restarting the application loses pipelines (URL mappings persist in H2). The event log is append-only and artifacts are immutable, so event-sourced persistence is a straightforward extension.
+- **Unauthenticated identities.** Reviewer and operator ids are audit labels, not authenticated principals.
+- **Performance evidence is a microbenchmark,** not a load test: single-threaded, in-process, local H2.
+- **Single-instance concurrency.** Locking is per pipeline within one JVM.
+
+## What production would add
+
+Durable event-sourced pipeline store; OIDC-authenticated reviewers with role-based approval rights; an LLM analyser behind the same contract, with evaluation sets; agents that open pull requests in a sandbox, followed by CI as the TESTING stage; distributed locking; and OpenTelemetry export of the event stream.

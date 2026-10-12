@@ -1,38 +1,69 @@
+# Runs every assessment scenario against a running app (mvn spring-boot:run) and saves evidence to docs/runs/.
 $ErrorActionPreference = 'Stop'
-$base = 'http://localhost:8080'
-$reviewer = 'demo-reviewer'
+$base = 'http://localhost:8080/api/pipelines'
+$out = Join-Path $PSScriptRoot '..\docs\runs'
+New-Item -ItemType Directory -Force -Path $out | Out-Null
 
-Write-Host 'Checking application health...'
-Invoke-RestMethod -Method Get -Uri "$base/api/health" | ConvertTo-Json -Depth 5
-
-$requirement = 'Build a URL shortener API that creates short links, redirects users, and tracks click analytics.'
-$created = Invoke-RestMethod -Method Post -Uri "$base/api/runs" -ContentType 'application/json' -Body (@{ requirement = $requirement } | ConvertTo-Json)
-$runId = $created.runId
-Write-Host "Created workflow: $runId"
-
-Write-Host 'Running low-risk planning (parallel design + acceptance planning)...'
-$planned = Invoke-RestMethod -Method Post -Uri "$base/api/runs/$runId/execute"
-if ($planned.status -ne 'PENDING_APPROVAL') { throw "Expected PENDING_APPROVAL after planning, got $($planned.status)" }
-
-Write-Host 'Approving the explicit, bounded execution scope...'
-$approval = @{ decision = 'approve'; reviewerId = $reviewer; reviewerNote = 'Approved allowlisted local URL-shortener checks only' } | ConvertTo-Json
-Invoke-RestMethod -Method Post -Uri "$base/api/runs/$runId/approval" -ContentType 'application/json' -Body $approval | Out-Null
-
-Write-Host 'Executing approved requirement-linked checks...'
-Invoke-RestMethod -Method Post -Uri "$base/api/runs/$runId/execute" | Out-Null
-
-$finalRun = Invoke-RestMethod -Method Get -Uri "$base/api/runs/$runId"
-$artifacts = Invoke-RestMethod -Method Get -Uri "$base/api/runs/$runId/artifacts"
-$events = Invoke-RestMethod -Method Get -Uri "$base/api/runs/$runId/events"
-
-Write-Host "Final status: $($finalRun.status)"
-Write-Host "Validation: $($finalRun.validation.status)"
-Write-Host "Artifacts: $($artifacts.Count)"
-Write-Host "Events: $($events.Count)"
-$finalRun | ConvertTo-Json -Depth 10
-$artifacts | ConvertTo-Json -Depth 10
-
-if ($finalRun.status -ne 'COMPLETED' -or $finalRun.validation.status -ne 'PASSED' -or $artifacts.Count -ne 5) {
-    throw 'Workflow acceptance checks failed. Inspect the run events and application logs.'
+function Post($path, $body) {
+    $json = if ($body) { $body | ConvertTo-Json -Depth 10 } else { '{}' }
+    Invoke-RestMethod -Method Post -Uri "$base$path" -ContentType 'application/json' -Body $json
 }
-Write-Host 'PASS: planning joined, reviewer approval was recorded, checks ran, and evidence artifacts were produced.' -ForegroundColor Green
+function Approve($id, $stage, $who) { Post "/$id/stages/$stage/approval" @{ decision = 'approve'; reviewerId = $who; reviewerNote = "Reviewed $stage evidence" } }
+function Expect($actual, $expected, $what) {
+    if ($actual -ne $expected) { throw "FAIL [$what]: expected $expected, got $actual" }
+    Write-Host "  ok  $what = $actual" -ForegroundColor Green
+}
+function Save($name, $id) {
+    foreach ($part in @('', '/events', '/artifacts', '/metrics', '/graph')) {
+        $file = if ($part) { "$name-$($part.Trim('/')).json" } else { "$name-pipeline.json" }
+        Invoke-RestMethod -Uri "$base/$id$part" | ConvertTo-Json -Depth 20 | Set-Content -Encoding utf8 (Join-Path $out $file)
+    }
+}
+
+Write-Host "`n1) GREENFIELD"
+$p = Post '' @{ requirement = 'Build a URL shortener API that creates short links, redirects users, and tracks click analytics.' }
+Expect $p.status 'AWAITING_APPROVAL' 'stops at implementation gate'
+$p = Approve $p.pipelineId 'IMPLEMENTATION' 'tech-lead'
+Expect $p.status 'AWAITING_APPROVAL' 'stops at release gate'
+$p = Approve $p.pipelineId 'RELEASE_READINESS' 'release-manager'
+Expect $p.status 'COMPLETED' 'greenfield'
+Save 'greenfield' $p.pipelineId
+
+Write-Host "`n2) BROWNFIELD"
+$p = Post '' @{ requirement = 'Fix the existing URL shortener so unknown short codes return 404 and add regression tests.' }
+$p = Approve $p.pipelineId 'IMPLEMENTATION' 'tech-lead'
+$p = Approve $p.pipelineId 'RELEASE_READINESS' 'release-manager'
+Expect $p.status 'COMPLETED' 'brownfield'
+Save 'brownfield' $p.pipelineId
+
+Write-Host "`n3) AMBIGUOUS -> clarification -> re-plan"
+$p = Post '' @{ requirement = 'Make the URL shortener faster and more secure for users.' }
+Expect $p.status 'NEEDS_CLARIFICATION' 'ambiguous requirement held'
+$p = Post "/$($p.pipelineId)/clarification" @{ requesterId = 'product-owner'; clarification = 'Fix the existing URL shortener so unknown short codes return 404 and add regression checks; defer performance and security improvements.' }
+Expect $p.status 'AWAITING_APPROVAL' 'graph re-planned after clarification'
+$p = Approve $p.pipelineId 'IMPLEMENTATION' 'tech-lead'
+$p = Approve $p.pipelineId 'RELEASE_READINESS' 'release-manager'
+Expect $p.status 'COMPLETED' 'ambiguous (clarified)'
+Save 'ambiguous' $p.pipelineId
+
+Write-Host "`n4) UNMEASURABLE QUALITY GOAL -> release blocked, no false pass"
+$p = Post '' @{ requirement = 'Build a secure URL shortener that creates short links and redirects users.' }
+$p = Approve $p.pipelineId 'IMPLEMENTATION' 'tech-lead'
+Expect $p.status 'BLOCKED' 'release blocked by CMP-001'
+Save 'blocked-nfr' $p.pipelineId
+
+Write-Host "`n5) FAILURE -> retry, rollback, safe stop, resume, MTTR"
+$p = Post '' @{ requirement = 'Build a URL shortener API that creates short links, redirects users, and tracks click analytics.' }
+$id = $p.pipelineId
+Post "/$id/faults" @{ stageId = 'TESTING'; mode = 'TRANSIENT_ONCE' } | Out-Null
+$p = Approve $id 'IMPLEMENTATION' 'tech-lead'
+Post "/$id/faults" @{ stageId = 'RELEASE_READINESS'; mode = 'PERMANENT' } | Out-Null
+$p = Approve $id 'RELEASE_READINESS' 'release-manager'
+Expect $p.status 'FAILED' 'permanent fault halts pipeline'
+$p = Post "/$id/resume" @{ operatorId = 'on-call-engineer'; reason = 'Fault cleared' }
+Expect $p.status 'COMPLETED' 'recovered'
+$m = Invoke-RestMethod -Uri "$base/$id/metrics"
+Write-Host "  retries=$($m.retryCount) rollbacks=$($m.rollbackCount) mttrMs=$($m.mttrMs) successRate=$($m.stageSuccessRatePercent)%"
+Save 'failure-recovery' $id
+
+Write-Host "`nAll scenarios passed. Evidence written to docs/runs/" -ForegroundColor Green
