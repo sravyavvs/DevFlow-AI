@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agentic Engineering Workbench</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1rem; color: #1f2937; }
+    textarea { width: 100%; min-height: 100px; padding: .7rem; }
+    button { padding: .6rem 1rem; margin: .3rem .3rem .3rem 0; cursor: pointer; }
+    .panel { border: 1px solid #d1d5db; border-radius: 12px; padding: 1rem; margin: 1rem 0; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; background: #f3f4f6; padding: 1rem; border-radius: 8px; }
+    .muted { color: #6b7280; }
+  </style>
+</head>
+<body>
+  <h1>Agentic Engineering Workbench</h1>
+  <p class="muted">Bounded agentic workflow: requirement → plan → human approval → real in-process smoke checks → evidence</p>
+  <div class="panel">
+    <label for="requirement"><strong>Engineering requirement</strong></label>
+    <textarea id="requirement">Build a URL shortener API that creates short links, redirects users, and tracks click analytics.</textarea>
+    <p><strong>Example scenarios</strong></p>
+    <button type="button" onclick="setExample('greenfield')">Greenfield example</button>
+    <button type="button" onclick="setExample('brownfield')">Brownfield example</button>
+    <button type="button" onclick="setExample('ambiguous')">Ambiguous example</button>
+    <p><button onclick="createRun()">Analyze requirement and create plan</button></p>
+  </div>
+  <div class="panel">
+    <h2>Workflow details</h2>
+    <div id="workflow">Submit a requirement to begin.</div>
+  </div>
+  <div class="panel">
+    <h2>Workflow metrics</h2>
+    <pre id="metrics">Metrics will appear after a workflow is created.</pre>
+  </div>
+  <div class="panel">
+    <h2>Owned artifacts</h2>
+    <pre id="artifacts">Artifacts will appear after a workflow is created.</pre>
+  </div>
+  <div class="panel">
+    <h2>Audit events</h2>
+    <pre id="events">No events yet.</pre>
+  </div>
+<script>
+let currentRunId = null;
+function setExample(type) {
+  const examples = {
+    greenfield: 'Build a URL shortener API that creates short links, redirects users, and tracks click analytics.',
+    brownfield: 'Fix a bug in the existing URL shortener so invalid short codes return 404 and add regression tests.',
+    ambiguous: 'Make the URL shortener faster and more secure for users.'
+  };
+  document.getElementById('requirement').value = examples[type];
+}
+async function createRun() {
+  const requirement = document.getElementById('requirement').value;
+  const response = await fetch('/api/runs', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({requirement})
+  });
+  if (!response.ok) { document.getElementById('workflow').textContent = await response.text(); return; }
+  const run = await response.json();
+  currentRunId = run.runId;
+  await refreshRun();
+}
+async function decide(decision) {
+  if (!currentRunId) return;
+  const reviewerId = prompt('Reviewer identity (required):') || '';
+  if (!reviewerId.trim()) { alert('Reviewer identity is required.'); return; }
+  const reviewerNote = prompt('Optional reviewer note:') || '';
+  const response = await fetch(`/api/runs/${currentRunId}/approval`, {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({decision, reviewerId, reviewerNote})
+  });
+  if (!response.ok) { alert(await response.text()); return; }
+  await refreshRun();
+}
+async function submitClarification() {
+  if (!currentRunId) return;
+  const clarification = document.getElementById('clarificationText').value;
+  const response = await fetch(`/api/runs/${currentRunId}/clarification`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({clarification})});
+  if (!response.ok) { alert(await response.text()); return; }
+  await refreshRun();
+}
+async function executeRun() {
+  if (!currentRunId) return;
+  const response = await fetch(`/api/runs/${currentRunId}/execute`, {method: 'POST'});
+  if (!response.ok) { alert(await response.text()); return; }
+  await refreshRun();
+}
+async function refreshRun() {
+  const response = await fetch(`/api/runs/${currentRunId}`);
+  const run = await response.json();
+  const state = run;
+  let html = `<p><strong>Run:</strong> ${state.runId}</p><p><strong>Status:</strong> ${state.status}</p>`;
+  html += `<p><strong>Stage:</strong> ${state.currentStage}</p><h3>Tasks</h3><ul>`;
+  state.tasks.forEach(t => html += `<li><strong>${t.id} — ${t.title}</strong>: ${t.status}; depends on [${t.dependsOn.join(', ')}]</li>`);
+  html += `</ul><h3>Approval</h3><p>${state.approval.reason}</p>`;
+  if (state.status === 'NEEDS_CLARIFICATION') {
+    html += `<h3>Clarification required</h3><p>Specify observable behavior and measurable acceptance criteria. Clarification triggers a new plan and requires fresh approval.</p><textarea id="clarificationText" placeholder="Example: For this iteration, defer performance/security work; fix unknown short codes to return 404 and add regression checks."></textarea><button onclick="submitClarification()">Submit clarification and replan</button>`;
+  }
+  if (state.status === 'PLANNING') {
+    html += `<button onclick="executeRun()">Run low-risk parallel planning</button>`;
+  }
+  if (state.status === 'PENDING_APPROVAL') {
+    html += `<button onclick="decide('approve')">Approve plan</button><button onclick="decide('reject')">Reject</button>`;
+  }
+  if (state.status === 'APPROVED' || state.status === 'EXECUTING') {
+    html += `<button onclick="executeRun()">Execute approved checks</button>`;
+  }
+  html += `<h3>Validation</h3><pre>${JSON.stringify(state.validation, null, 2)}</pre>`;
+  html += `<p class="muted">Autonomy boundary: execution may only call the allowlisted URL-shortener service. It does not edit source code, run shell commands, or deploy.</p>`;
+  document.getElementById('workflow').innerHTML = html;
+  const ev = await fetch(`/api/runs/${currentRunId}/events`);
+  document.getElementById('events').textContent = JSON.stringify(await ev.json(), null, 2);
+  const metricResponse = await fetch(`/api/runs/${currentRunId}/metrics`);
+  document.getElementById('metrics').textContent = JSON.stringify(await metricResponse.json(), null, 2);
+  const artifactResponse = await fetch(`/api/runs/${currentRunId}/artifacts`);
+  document.getElementById('artifacts').textContent = JSON.stringify(await artifactResponse.json(), null, 2);
+}
+</script>
+</body>
+</html>
